@@ -1,0 +1,16 @@
+parameter,value
+Lf,0.05
+Cf,0.05
+Cdc,0.038
+current_control_pi_kp,1
+current_control_pi_ki,10
+active_power_control_pi_kp,0.5
+active_power_control_pi_ki,5
+dc_voltage_control_pi_kp,0.5
+dc_voltage_control_pi_ki,5
+voltage_feedforward_filter_time_constant,0.01
+pll_pi_kp,26
+pll_pi_ki,7800
+active_power_reference,1
+q_axis_current_reference,0
+converter_rated_capacity_pu,1

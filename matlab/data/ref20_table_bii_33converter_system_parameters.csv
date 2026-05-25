@@ -1,0 +1,12 @@
+parameter,value,unit_or_note
+base_capacity_ac_system,1500,kVA
+base_voltage_ac_system,690,V
+reactance_unit_length_35kv_line,0.38,ohm_per_km
+adjacent_converter_line_length,0.28,km
+line_resistance_to_line_inductance_tau,0,dimensionless
+rated_capacity_each_converter,1,pu
+transformer_220_35_rated_capacity,210,MVA
+transformer_220_35_short_circuit_voltage,14.2,percent
+transformer_35_0p69_rated_capacity,2,MVA
+transformer_35_0p69_short_circuit_voltage,6.5,percent
+converter_boost_transformer_impedance,0.067,pu_from_table_biii_note

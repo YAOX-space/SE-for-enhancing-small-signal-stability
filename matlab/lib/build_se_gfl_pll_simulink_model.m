@@ -1,0 +1,66 @@
+function modelPath = build_se_gfl_pll_simulink_model(modelDir)
+%BUILD_SE_GFL_PLL_SIMULINK_MODEL Build a configurable Simulink small-signal model.
+%
+% The model is intentionally a transparent reduced-order GFL/PLL model. It
+% uses a voltage-sag input and a configurable MIMO state-space block whose
+% poles represent the weakest PLL-induced oscillatory mode. It is not the
+% authors' unpublished EMT model.
+
+if nargin < 1 || isempty(modelDir)
+    modelDir = fileparts(fileparts(mfilename('fullpath')));
+end
+if ~exist(modelDir, 'dir')
+    mkdir(modelDir);
+end
+
+modelName = 'se_gfl_pll_small_signal_model';
+modelPath = fullfile(modelDir, [modelName '.slx']);
+
+if bdIsLoaded(modelName)
+    close_system(modelName, 0);
+end
+if exist(modelPath, 'file')
+    delete(modelPath);
+end
+
+new_system(modelName);
+set_param(modelName, ...
+    'StopTime', 'sim_stop_time', ...
+    'Solver', 'ode45', ...
+    'MaxStep', '1e-3', ...
+    'SaveOutput', 'off', ...
+    'SignalLogging', 'off');
+
+add_block('simulink/Sources/From Workspace', [modelName '/Voltage Sag Input'], ...
+    'VariableName', 'fault_input', ...
+    'Position', [70 95 210 135]);
+
+add_block('simulink/Continuous/State-Space', [modelName '/PLL-Dominated Network Mode'], ...
+    'A', 'ss_A', ...
+    'B', 'ss_B', ...
+    'C', 'ss_C', ...
+    'D', 'ss_D', ...
+    'Position', [285 82 470 148]);
+
+add_block('simulink/Math Operations/Bias', [modelName '/Add 1 p.u. Operating Point'], ...
+    'Bias', '1', ...
+    'Position', [545 90 710 140]);
+
+add_block('simulink/Sinks/To Workspace', [modelName '/Active Power Output'], ...
+    'VariableName', 'simout_P', ...
+    'SaveFormat', 'Structure With Time', ...
+    'Position', [785 95 930 135]);
+
+add_line(modelName, 'Voltage Sag Input/1', 'PLL-Dominated Network Mode/1', 'autorouting', 'on');
+add_line(modelName, 'PLL-Dominated Network Mode/1', 'Add 1 p.u. Operating Point/1', 'autorouting', 'on');
+add_line(modelName, 'Add 1 p.u. Operating Point/1', 'Active Power Output/1', 'autorouting', 'on');
+
+annotation = sprintf([ ...
+    'Approximate GFL/PLL small-signal model for the SE placement paper.\\n' ...
+    'Input: fault_input. State-space variables: ss_A, ss_B, ss_C, ss_D.\\n' ...
+    'The model is built from public paper parameters and calibrated modes, not author EMT blocks.']);
+Simulink.Annotation(modelName, annotation);
+
+save_system(modelName, modelPath);
+close_system(modelName, 0);
+end

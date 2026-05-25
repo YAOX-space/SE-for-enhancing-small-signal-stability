@@ -1,0 +1,4 @@
+element,reactance_pu,derivation
+collector_line_between_adjacent_35kv_buses,0.000130286,0.38 ohm_per_km * 0.28 km / ((35 kV)^2 / 1.5 MVA)
+grid_transformer_35_220,0.001014286,0.142 pu on 210 MVA converted to 1.5 MVA base
+converter_boost_transformer_35_0p69,0.067,value stated below Table B.III and close to 0.065 pu short-circuit voltage in Table B.II

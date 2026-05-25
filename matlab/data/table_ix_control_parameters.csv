@@ -1,0 +1,12 @@
+parameter,value
+Lf,0.05
+Cf,0.05
+Cdc,0.038
+Hi_current_control,"1+10/s"
+Hp_active_power_control,"0.5+5/s"
+GFF_voltage_feedforward_filter,"1/(1+0.01s)"
+Hpll,"(26+7800/s)/s"
+CBR_active_power_reference,1
+CBR_q_axis_current_reference,0
+SE_active_power_reference,-1
+SE_q_axis_current_reference,0
