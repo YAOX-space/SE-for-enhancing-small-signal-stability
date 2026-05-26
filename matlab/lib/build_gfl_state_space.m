@@ -1,32 +1,27 @@
-function [A, B, C, D, info] = build_gfl_state_space(s_active, Z_active, ctrl, gain_fac)
+function [A, B, C, D, info] = build_gfl_state_space(s_active, Z_active, ctrl, gain_fac, eig_table)
 %BUILD_GFL_STATE_SPACE  Physics-informed modal model for multi-GFL stability.
 %
 % Strategy
 % --------
 % 1. Compute gSCR = 1/lambda_max+(diag(s)*Z)  [derived from network + capacity]
-% 2. Map gSCR -> dominant mode eigenvalue (sigma +/- j*omega) using Table V
-%    calibration data from the paper (Yuan et al., IEEE TIA 2025)
+% 2. Map gSCR -> dominant mode eigenvalue (sigma +/- j*omega) using either:
+%    (a) eig_table (optional 5th arg): first-principles computed table from
+%        compute_first_principles_eigenvalues(), or
+%    (b) hardcoded Table V data from the paper (fallback if eig_table empty)
 % 3. Compute mode shape (participation factors) from the dominant left
 %    eigenvector of the weighted-impedance matrix diag(s)*Z
 % 4. Build a 2-state modal state-space per converter so the Simulink simulation
 %    produces physically correct oscillation frequencies, damping, and converter
 %    participation distributions
 %
-% Why not a pure first-principles A matrix?
-%   A fully algebraic derivation (fast inner current loop) gives PLL modes
-%   at -Kp_pll/2 +/- j*sqrt(Ki_pll) = -13 +/- 87.5i regardless of the
-%   network, because the static Z coupling term is O(0.02) -- far too small
-%   to shift damping from -13 to +0.09 as the paper reports.  The instability
-%   requires the full dynamic model (Lf dynamics, current loop lag at 88 rad/s)
-%   which is captured only by the paper's reported Table-V eigenvalue data.
-%   Using that data here is more faithful to the paper than a first-principles
-%   model that gives the wrong damping.
-%
 % Inputs
 %   s_active  – signed capacity vector (N×1); >0 CBR, <0 SE
 %   Z_active  – N×N impedance matrix for the active converter buses
 %   ctrl      – struct with fields: Kp_pll, Ki_pll, Kp_p, Ki_p
-%                (used only for gSCR computation cross-check)
+%   gain_fac  – optional scalar coupling gain (default 200)
+%   eig_table – optional struct with fields gSCR, sigma, omega (row vectors)
+%               from compute_first_principles_eigenvalues(); when provided
+%               replaces the hardcoded Table V lookup
 %
 % Outputs
 %   A (2N×2N), B (2N×1), C (N×2N), D (N×1)
@@ -49,16 +44,27 @@ catch
     gscr    = NaN;
 end
 
-% ── 2. Map gSCR -> (sigma, omega) from Table V calibration ───────────────
-% Table V (IEEE 39-node, Yuan et al. 2025):
-%   installed_ses | gSCR  | weakest_eigenvalue
-%   0             | 2.650 |  0.090 +/- 88.342i
-%   1             | 2.926 | -1.758 +/- 88.949i
-%   2             | 3.256 | -3.485 +/- 89.346i
-%   3             | 3.666 | -5.104 +/- 89.564i
-gscr_tbl = [2.650, 2.926, 3.256, 3.666];
-sig_tbl  = [0.090, -1.758, -3.485, -5.104];
-omg_tbl  = [88.342, 88.949, 89.346, 89.564];
+% ── 2. Map gSCR -> (sigma, omega) ────────────────────────────────────────
+% Prefer first-principles eig_table if provided; fall back to Table V.
+use_fp = nargin >= 5 && ~isempty(eig_table) && ...
+         isfield(eig_table,'gSCR') && isfield(eig_table,'sigma') && isfield(eig_table,'omega');
+
+if use_fp
+    % First-principles table from compute_first_principles_eigenvalues()
+    gscr_tbl = eig_table.gSCR(:)';
+    sig_tbl  = eig_table.sigma(:)';
+    omg_tbl  = eig_table.omega(:)';
+else
+    % Fallback: Table V (IEEE 39-node, Yuan et al. 2025)
+    %   installed_ses | gSCR  | weakest_eigenvalue
+    %   0             | 2.650 |  0.090 +/- 88.342i
+    %   1             | 2.926 | -1.758 +/- 88.949i
+    %   2             | 3.256 | -3.485 +/- 89.346i
+    %   3             | 3.666 | -5.104 +/- 89.564i
+    gscr_tbl = [2.650, 2.926, 3.256, 3.666];
+    sig_tbl  = [0.090, -1.758, -3.485, -5.104];
+    omg_tbl  = [88.342, 88.949, 89.346, 89.564];
+end
 
 if ~isnan(gscr)
     sigma = interp1(gscr_tbl, sig_tbl, gscr, 'pchip', 'extrap');
@@ -71,15 +77,17 @@ end
 
 dom_eig = sigma + 1i*omega;
 
-% ── 3. Participation factors from dominant eigenvector ────────────────────
-% The dominant left eigenvector of diag(s)*Z gives how strongly each
-% converter participates in the worst mode.
-[V, lam_all] = eig(Wsigned);
+% ── 3. Participation factors from dominant LEFT eigenvector ──────────────
+% The paper's sensitivity formula (Appendix I-C) uses the left eigenvector
+% of W = diag(s)*Z.  Left eigenvectors of W are right eigenvectors of W'.
+% For uniform s (39-node, 33-conv), W=Z is symmetric so left=right.
+% For heterogeneous s (two-area), left != right — use W' here.
+[V_left, lam_all] = eig(Wsigned');
 lam_diag = diag(lam_all);
 real_mask = abs(imag(lam_diag)) < 1e-7 & real(lam_diag) > 1e-9;
 if any(real_mask)
     pos_lams = real(lam_diag(real_mask));
-    pos_vecs = real(V(:, real_mask));
+    pos_vecs = real(V_left(:, real_mask));
     [~, ix]  = max(pos_lams);
     v_dom    = abs(pos_vecs(:, ix));
     v_dom    = v_dom / max(v_dom + eps);   % normalize to [0,1]

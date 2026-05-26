@@ -75,7 +75,11 @@ def left_eigen_sensitivities(
         d(lambda)/d(S_BE,j) = -a * lambda * v_j^2
 
     where v is the LEFT eigenvector of W = S'_B1 Z for lambda, and `a > 0`
-    is an unknown positive scalar that does not affect node ranking.
+    is a positive scalar (a = 1/sum_j(s_j * v_j^2) under bilinear normalization).
+    Derived in paper Appendix I-C (Eq. 26): the λ factor appears naturally from
+    Z S'_B1 v^T = λ v^T (left eigenvec equation).  The constant `a` does not
+    affect node ranking; the returned values include -lambda for consistency with
+    the paper formula and Table I scale.
 
     Implementation note: left eigenvectors of W equal right eigenvectors of
     W^T (standard identity), so np.linalg.eig(W.T) is used.  The result is

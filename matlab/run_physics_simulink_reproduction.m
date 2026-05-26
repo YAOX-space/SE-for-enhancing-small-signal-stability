@@ -6,11 +6,12 @@ function run_physics_simulink_reproduction()
 %
 % Time-domain figures (6, 11, 12, 14):
 %   Physics-informed linearised state-space model (build_gfl_state_space)
-%   calibrated to Table V eigenvalue data, simulated via Simulink.
+%   with gSCR -> (sigma, omega) mapping from first-principles 9-state GFL
+%   model (compute_first_principles_eigenvalues), NOT from paper Table V.
 %
 % Eigenvalue figures (8, 10):
-%   pchip interpolation of Table V data over gSCR sweep; 39-node network
-%   eigenvalues computed from calibrated Z matrix.
+%   pchip interpolation of first-principles table over gSCR sweep; 39-node
+%   network eigenvalues computed from calibrated Z matrix.
 %
 % Outputs written to matlab/results/:
 %   fig6_two_area_time_domain.png
@@ -30,12 +31,19 @@ if ~exist(resultsDir, 'dir'), mkdir(resultsDir); end
 ctrl = gfl_control_params();
 fprintf('Control params: Kp_pll=%g  Ki_pll=%g\n', ctrl.Kp_pll, ctrl.Ki_pll);
 
-% ── Table V: reported dominant eigenvalues (Yuan et al. 2025) ────────────
-% Columns: [gSCR, sigma, omega]  for 0,1,2,3 SEs placed in 39-node system
-gscr_tbl = [2.650,  2.926,  3.256,  3.666];
-sig_tbl  = [0.090, -1.758, -3.485, -5.104];
-omg_tbl  = [88.342, 88.949, 89.346, 89.564];
-CgSCR    = 2.66;   % critical gSCR
+% ── First-principles eigenvalue table (replaces hardcoded Table V) ────────
+% Sweeps gSCR = 1.5 … 5.0 using the 9-state GFL ODE with GFF filter.
+% This is the gSCR -> (sigma, omega) calibration curve derived independently
+% from the control model, without using paper Table V as input.
+fprintf('\nComputing first-principles eigenvalue table (gSCR 1.5 to 5.0)...\n');
+fprintf('(~15 fsolve+Jacobian evaluations; takes ~1 min)\n');
+fp_gscr_sweep = [linspace(1.5, 2.0, 3), linspace(2.1, 3.0, 5), linspace(3.2, 5.0, 5)];
+fp_raw  = compute_first_principles_eigenvalues(fp_gscr_sweep);
+eig_table.gSCR  = fp_raw.gSCR(:)';
+eig_table.sigma = fp_raw.sigma(:)';
+eig_table.omega = fp_raw.omega(:)';
+CgSCR = interp1(eig_table.sigma, eig_table.gSCR, 0, 'pchip');   % gSCR where sigma=0
+fprintf('First-principles critical gSCR (sigma=0): %.4f  (paper reports ~2.66)\n', CgSCR);
 
 % ── IEEE 39-node network (shared by Figs 10, 11, 12) ─────────────────────
 fprintf('\nLoading IEEE 39-node network...\n');
@@ -55,20 +63,40 @@ Z_9x9_raw   = Z39_full(cbr_rows39, cbr_rows39);   % 9x9 CBR submatrix
 % ═══════════════════════════════════════════════════════════════════════
 %  FIG. 8  Weakest eigenvalue loci (CBR injecting vs SE absorbing)
 %
-%  CBR locus: eigenvalue crosses imaginary axis as grid weakens
-%             (gSCR decreasing 4.0 → 1.5, from Table V extrapolation)
-%  SE locus:  eigenvalue stays in LHP; larger SE capacity → more stable
-%             (physics-fitted linear approximation, anchored at Table V)
+%  CBR locus: gSCR sweeps 4.0 → 1.5 (network weakens); sigma crosses 0.
+%             Derived from first-principles eig_table (no paper data used).
+%  SE locus:  SE co-located at CBR node 1; se_cap grows 0.5 → 4.0 pu.
+%             Net signed capacity at node 1 = 1 - se_cap (increasingly
+%             negative).  λmax decreases → gSCR increases → sigma moves
+%             deeper into LHP.  Uses same eig_table, no empirical fit.
 % ═══════════════════════════════════════════════════════════════════════
 fprintf('\n── Fig. 8: Eigenvalue loci ──\n');
 
 gscr_cbr  = linspace(4.0, 1.5, 80);
-sigma_cbr = interp1(gscr_tbl, sig_tbl, gscr_cbr, 'pchip', 'extrap');
-omega_cbr = interp1(gscr_tbl, omg_tbl, gscr_cbr, 'pchip', 'extrap');
+sigma_cbr = interp1(eig_table.gSCR, eig_table.sigma, gscr_cbr, 'pchip', 'extrap');
+omega_cbr = interp1(eig_table.gSCR, eig_table.omega, gscr_cbr, 'pchip', 'extrap');
 
-se_cap_range = linspace(1.5, 4.0, 80);
-sigma_se = -4.5 - 0.65 * se_cap_range;
-omega_se = 82.0 + 2.0  * se_cap_range;
+% SE locus: calibrate 9-CBR Z to gSCR=2.650 baseline, then add SE at node 1
+k_fig8_se  = (1/2.650) / max_positive_eig(Z_9x9_raw);
+Z_9x9_se   = k_fig8_se * Z_9x9_raw;
+s_cbr9     = ones(9,1);
+se_cap_range = linspace(0.5, 4.0, 80);
+sigma_se   = nan(size(se_cap_range));
+omega_se   = nan(size(se_cap_range));
+for i8 = 1:numel(se_cap_range)
+    s_try = s_cbr9;
+    s_try(1) = 1.0 - se_cap_range(i8);   % node 1: net signed cap = CBR - SE
+    try
+        lam_try  = max_positive_eig(diag(s_try) * Z_9x9_se);
+        gscr_try = 1 / lam_try;
+        sigma_se(i8) = interp1(eig_table.gSCR, eig_table.sigma, gscr_try, 'pchip', 'extrap');
+        omega_se(i8) = interp1(eig_table.gSCR, eig_table.omega, gscr_try, 'pchip', 'extrap');
+    catch
+    end
+end
+valid_se = ~isnan(sigma_se);
+sigma_se  = sigma_se(valid_se);
+omega_se  = omega_se(valid_se);
 
 fig8 = figure('Color','w','Name','Fig 8','Position',[60 60 620 480]);
 plot(sigma_cbr,  omega_cbr, 'LineWidth', 1.6, 'Color', [0 0.447 0.741]); hold on;
@@ -110,8 +138,8 @@ for i = 1:numel(m_range)
     Zm = (k_f10 * m_range(i)/1.015) * Z_9x9_raw;
     lam = max_positive_eig(diag(s_f10) * Zm);
     gscr_i = 1/lam;
-    sigma_f10(i) = interp1(gscr_tbl, sig_tbl, gscr_i, 'pchip', 'extrap');
-    omega_f10(i) = interp1(gscr_tbl, omg_tbl, gscr_i, 'pchip', 'extrap');
+    sigma_f10(i) = interp1(eig_table.gSCR, eig_table.sigma, gscr_i, 'pchip', 'extrap');
+    omega_f10(i) = interp1(eig_table.gSCR, eig_table.omega, gscr_i, 'pchip', 'extrap');
 end
 gscr_check = @(m) 1/max_positive_eig(diag(s_f10) * ((k_f10*m/1.015)*Z_9x9_raw));
 fprintf('  m=0.70 gSCR=%.3f | m=1.015 gSCR=%.3f | m=1.05 gSCR=%.3f\n', ...
@@ -174,7 +202,7 @@ cases2a = {
 
 fig6_path = fullfile(resultsDir, 'fig6_two_area_time_domain.png');
 simulate_and_plot(cases2a, ctrl, 0.06, 1.0, ...
-    'Fig. 6: Two-area four-CBR active power responses', fig6_path, rootDir);
+    'Fig. 6: Two-area four-CBR active power responses', fig6_path, rootDir, eig_table);
 
 % ═══════════════════════════════════════════════════════════════════════
 %  IEEE 39-NODE  →  Fig. 11 and Fig. 12
@@ -204,7 +232,7 @@ end
 
 fig11_path = fullfile(resultsDir, 'fig11_39node_gscr_time_domain.png');
 simulate_and_plot(cases39_fig11, ctrl, 0.10, 1.0, ...
-    'Fig. 11: 39-node responses at different gSCR levels', fig11_path, rootDir);
+    'Fig. 11: 39-node responses at different gSCR levels', fig11_path, rootDir, eig_table);
 
 % ── Fig. 12: m=0.75, vary SE placement ───────────────────────────────────
 k_fig12 = (1/2.650) / max_positive_eig(Z_9x9_raw);
@@ -240,7 +268,7 @@ cases39_fig12 = {
 
 fig12_path = fullfile(resultsDir, 'fig12_39node_placement_time_domain.png');
 simulate_and_plot(cases39_fig12, ctrl, 0.10, 1.0, ...
-    'Fig. 12: 39-node SE placement comparison', fig12_path, rootDir);
+    'Fig. 12: 39-node SE placement comparison', fig12_path, rootDir, eig_table);
 
 % ═══════════════════════════════════════════════════════════════════════
 %  33-CONVERTER  →  Fig. 14
@@ -285,7 +313,7 @@ if exist(mat33_path, 'file')
 
     fig14_path = fullfile(resultsDir, 'fig14_33converter_time_domain.png');
     simulate_and_plot(cases33, ctrl, 0.25, 1.0, ...
-        'Fig. 14: 33-converter placement comparison', fig14_path, rootDir);
+        'Fig. 14: 33-converter placement comparison', fig14_path, rootDir, eig_table);
 else
     fprintf('  33-converter matrices not found – run import_reproduction_data first.\n');
     fprintf('  Expected: %s\n', mat33_path);
@@ -302,8 +330,9 @@ end
 %    cbr_mask  – logical(N,1): true for CBR nodes to plot
 %    P0_vec    – (N,1): nominal CBR device power (before ΔP)
 %    gain_fac  – scalar: coupling gain in build_gfl_state_space
+%  eig_table (optional) – struct with gSCR/sigma/omega from first-principles
 % ═══════════════════════════════════════════════════════════════════════
-function simulate_and_plot(cases, ctrl, u_mag, t_stop, figTitle, outPath, rootDir)
+function simulate_and_plot(cases, ctrl, u_mag, t_stop, figTitle, outPath, rootDir, eig_table)
 
 nCases = size(cases, 1);
 fig = figure('Color','w','Name',figTitle,'Position',[100 100 780 200*nCases]);
@@ -317,7 +346,11 @@ for k = 1:nCases
     P0 = cases{k,5}(:);
     gf = cases{k,6};
 
-    [A, B, C, D, info] = build_gfl_state_space(s_active, Z_active, ctrl, gf);
+    if nargin >= 8 && ~isempty(eig_table)
+        [A, B, C, D, info] = build_gfl_state_space(s_active, Z_active, ctrl, gf, eig_table);
+    else
+        [A, B, C, D, info] = build_gfl_state_space(s_active, Z_active, ctrl, gf);
+    end
     fprintf('  %s: N=%d, gSCR=%.3f, dom_eig=%.3f±%.1fi\n', ...
         label, info.N, info.gscr, real(info.dominant_eig), abs(imag(info.dominant_eig)));
 
