@@ -69,9 +69,19 @@ def left_eigen_sensitivities(
     """Rank placement nodes using the paper's eigenvector sensitivity.
 
     For the largest positive eigenvalue lambda of S'_B1 Z, the paper derives
-    d(lambda)/d(S_BE,j) = -a * lambda * v_j^2.  The unknown positive scaling
-    `a` does not affect ranking, so this implementation reports
-    -lambda * v_j^2 from the corresponding left eigenvector.
+    (Appendix I-C, Yuan et al. 2025) via a Lagrangian on the equivalent
+    symmetric problem Z^{1/2} diag(S) Z^{1/2}:
+
+        d(lambda)/d(S_BE,j) = -a * lambda * v_j^2
+
+    where v is the LEFT eigenvector of W = S'_B1 Z for lambda, and `a > 0`
+    is an unknown positive scalar that does not affect node ranking.
+
+    Implementation note: left eigenvectors of W equal right eigenvectors of
+    W^T (standard identity), so np.linalg.eig(W.T) is used.  The result is
+    real-valued at lambda_max (which is a simple real eigenvalue whenever the
+    CBR-capacity-weighted network has a unique largest positive eigenvalue).
+    Squaring v_j removes any sign ambiguity from eigenvector normalization.
 
     Nodes are zero-based.
     """

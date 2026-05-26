@@ -44,7 +44,20 @@ INITIAL_WEIGHTED = np.array(
 
 
 def reconstruct_impedance() -> tuple[np.ndarray, np.ndarray]:
-    """Reconstruct a symmetric Z consistent with the printed matrix."""
+    """Reconstruct a symmetric Z consistent with the printed matrix.
+
+    Scope limitation: only the four CBR rows of Z are recovered from the
+    printed W via Z[i,:] = W[i,:] / S_i.  Symmetry then fills columns 0-3
+    for all rows, but the 5×5 passive-to-passive sub-block (rows 4-8,
+    cols 4-8) remains zero because those entries do not appear in the paper.
+
+    This is sufficient for the two greedy steps reproduced here, because
+    the optimal nodes (1 and 4) are both CBR nodes.  If the algorithm were
+    run to place more SEs at passive nodes the missing diagonal entries
+    Z[j,j] for j >= 4 would cause incorrect sensitivity values.  For a
+    full 9-node greedy run, build Z from the line data in
+    matlab/data/table_x_two_area_lines.csv via build_network_from_edges.
+    """
 
     capacities = np.array([0.5, 1.0, 1.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
     impedance = np.zeros_like(INITIAL_WEIGHTED)
