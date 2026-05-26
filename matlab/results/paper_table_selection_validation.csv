@@ -1,7 +1,0 @@
-source,metric,selected,value,expected,match,note
-Table I,min sensitivity,1,-0.175,1,1,two-area first SE
-Table II,min sensitivity,4,-0.272,4,1,two-area second SE
-Table III,max gSCR,[1 4],3.57,[1 4],1,two-area exhaustive optimum
-Table IV,min sensitivity,39,-0.0503,39,1,IEEE 39 first SE
-Table VII,max damping,39,0.02,39,1,IEEE 39 one-SE damping optimum
-Table VIII,min sensitivity,[45 56 67],-0.0122,67,1,33-converter first SE
