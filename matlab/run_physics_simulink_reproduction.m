@@ -458,14 +458,4 @@ end
 end
 
 
-% ═══════════════════════════════════════════════════════════════════════
-%  gfl_control_params  –  Table IX control parameters
-% ═══════════════════════════════════════════════════════════════════════
-function ctrl = gfl_control_params()
-ctrl.Kp_pll = 26;
-ctrl.Ki_pll = 7800;
-ctrl.Kp_p   = 0.5;
-ctrl.Ki_p   = 5;
-ctrl.Lf     = 0.05;
-ctrl.Cf     = 0.05;
-end
+% gfl_control_params is defined in lib/gfl_control_params.m (added to path above).
