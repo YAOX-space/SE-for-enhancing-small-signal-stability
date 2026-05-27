@@ -42,6 +42,7 @@ gscr_values = gscr_values(:)';
 p.omega0  = 2*pi*50;
 p.Lf      = 0.05 / p.omega0;
 p.Rf      = 0.002 / p.omega0;
+p.Cf      = 0.05  / p.omega0;  % LCL capacitor (11-state model)
 p.Kp_pll  = 26;    p.Ki_pll = 7800;
 p.Kp_p    = 0.5;   p.Ki_p   = 5;
 p.Kp_i    = 1;     p.Ki_i   = 10;
@@ -85,24 +86,33 @@ for gi = 1:nG
 
     fprintf('\n[gSCR target=%.4f  actual=%.4f]\n', g_tgt, gscr_actual(gi));
 
-    % ── steady state via fsolve ───────────────────────────────────────────
-    x_ss = find_steady_state_9state(X_net, S_CBR, p);
-    res  = gfl9_rotating_ode(x_ss, p, X_net, S_CBR);
+    % ── steady state (Newton-Raphson, no Optimization Toolbox) ───────────
+    x_ss = gfl13_find_ss(X_net, S_CBR, p);
+    res  = gfl13_ode(x_ss, p, X_net, S_CBR, 1.0);
     fprintf('  Max |residual| at SS: %.2e\n', max(abs(res)));
 
     % ── numerical Jacobian ───────────────────────────────────────────────
-    nSt  = 9*N;
-    f0   = gfl9_rotating_ode(x_ss, p, X_net, S_CBR);
+    nSt  = 13*N;
+    f0   = gfl13_ode(x_ss, p, X_net, S_CBR, 1.0);
     J    = zeros(nSt);
     eps_fd = 1e-7;
     for j = 1:nSt
         xp = x_ss;  xp(j) = xp(j) + eps_fd;
-        J(:,j) = (gfl9_rotating_ode(xp, p, X_net, S_CBR) - f0) / eps_fd;
+        J(:,j) = (gfl13_ode(xp, p, X_net, S_CBR, 1.0) - f0) / eps_fd;
     end
 
     ev = eig(J);
-    [~, bi] = min(abs(abs(imag(ev)) - 88));
-    lam = ev(bi);
+    % Select dominant PLL mode: max real part among |omega| in [70,130] rad/s
+    % (avoids spurious fast LCL modes and selects the most dangerous slow mode)
+    mask = abs(imag(ev)) >= 70 & abs(imag(ev)) <= 130;
+    ev_pll = ev(mask);
+    if isempty(ev_pll)
+        [~, bi] = min(abs(abs(imag(ev)) - 88));
+        lam = ev(bi);
+    else
+        [~, bi] = max(real(ev_pll));
+        lam = ev_pll(bi);
+    end
     sigma_out(gi) = real(lam);
     omega_out(gi) = abs(imag(lam));
 
@@ -154,132 +164,6 @@ end
 end
 
 
-% ═══════════════════════════════════════════════════════════════════════
-%  find_steady_state_9state  –  find co-rotating steady state via fsolve
-%
-%  Works for both stable and unstable operating points because it solves
-%  dxdt(x_ss) = 0 directly (Newton's method), rather than integrating
-%  forward in time which diverges when the steady state is unstable.
-% ═══════════════════════════════════════════════════════════════════════
-function x_ss = find_steady_state_9state(X_net, S_CBR, p)
-N   = numel(S_CBR);
-nSt = 9*N;
-
-% Algebraic initial guess (quasi-static, iq=0)
-id_ss0 = S_CBR(:);
-Iq_g0  = zeros(N,1);
-Id_g0  = id_ss0;
-Vd_g0  = 1.0 - X_net * Iq_g0;
-Vq_g0  =       X_net * Id_g0;
-phi0   = atan2(Vq_g0, Vd_g0);
-
-x0 = zeros(nSt,1);
-for k = 1:N
-    b = (k-1)*9;
-    phi_k = phi0(k);
-    x0(b+1) = phi_k;
-    % eps_pll (b+2) = 0: Vq_l=0 at SS → dphi=0 requires eps_pll=0
-    x0(b+3) = id_ss0(k) / p.Ki_p;            % eps_p:  id_ref=Ki_p*eps_p at SS
-    x0(b+4) = p.Rf * id_ss0(k) / p.Ki_i;     % eps_id: vd_vsc residual
-    % eps_iq (b+5) = 0: iq_ref=0 and iq=0
-    x0(b+6) = id_ss0(k);                      % id
-    % iq (b+7) = 0
-    x0(b+8) = Vd_g0(k)*cos(phi_k) + Vq_g0(k)*sin(phi_k);   % Vd_ff = Vd_l
-    x0(b+9) = -Vd_g0(k)*sin(phi_k) + Vq_g0(k)*cos(phi_k);  % Vq_ff = Vq_l
-end
-
-% Primary: fsolve finds dxdt=0 directly (stable or unstable fixed point)
-f    = @(x) gfl9_rotating_ode(x, p, X_net, S_CBR);
-opts = optimoptions('fsolve','Display','off','TolFun',1e-10,'TolX',1e-10,...
-    'MaxIterations',500,'MaxFunctionEvaluations',50000);
-[x_ss, fval, exitflag] = fsolve(f, x0, opts);
-fprintf('    fsolve: exitflag=%d, max|f|=%.2e\n', exitflag, max(abs(fval)));
-
-if exitflag <= 0 || max(abs(fval)) > 1e-8
-    % Fallback: run ODE to reduce residual then fsolve from there
-    warning('fsolve did not converge (exitflag=%d), trying ODE+fsolve ...', exitflag);
-    ode_f    = @(t,x) gfl9_rotating_ode(x, p, X_net, S_CBR);
-    opts_ode = odeset('RelTol',1e-8,'AbsTol',1e-10,'MaxStep',5e-3);
-    [~, xt]  = ode15s(ode_f, [0 15], x0, opts_ode);
-    [x_ss, fval2, ef2] = fsolve(f, xt(end,:)', opts);
-    fprintf('    ODE+fsolve: exitflag=%d, max|f|=%.2e\n', ef2, max(abs(fval2)));
-end
-end
-
-
-% ═══════════════════════════════════════════════════════════════════════
-%  gfl9_rotating_ode  –  9-state GFL in co-rotating frame (with GFF)
-%
-%  States per converter k:
-%    [phi, eps_pll, eps_p, eps_id, eps_iq, id, iq, Vd_ff, Vq_ff]
-%
-%  phi = theta_k - omega0*t  (angle relative to global rotating frame)
-%  Vd_ff, Vq_ff = GFF-filtered terminal voltages (local frame)
-% ═══════════════════════════════════════════════════════════════════════
-function dxdt = gfl9_rotating_ode(x, p, X_net, S_CBR)
-N   = numel(S_CBR);
-w0  = p.omega0;  Lf = p.Lf;  Rf = p.Rf;
-tau = p.tau_ff;
-
-phi     = x(1:9:end);
-eps_pll = x(2:9:end);
-eps_p   = x(3:9:end);
-eps_id  = x(4:9:end);
-eps_iq  = x(5:9:end);
-id_loc  = x(6:9:end);
-iq_loc  = x(7:9:end);
-Vd_ff   = x(8:9:end);
-Vq_ff   = x(9:9:end);
-
-% Global-frame currents
-Id_g = id_loc.*cos(phi) - iq_loc.*sin(phi);
-Iq_g = id_loc.*sin(phi) + iq_loc.*cos(phi);
-
-% Network voltages (global frame, quasi-static purely-inductive network)
-Vd_g = 1.0 - X_net * Iq_g;
-Vq_g =       X_net * Id_g;
-
-% Terminal voltage in converter local dq frame
-Vd_l =  Vd_g.*cos(phi) + Vq_g.*sin(phi);
-Vq_l = -Vd_g.*sin(phi) + Vq_g.*cos(phi);
-
-% Measured active power
-P_meas = Vd_l.*id_loc + Vq_l.*iq_loc;
-Pref   = S_CBR(:);
-
-% Outer power control loop → id reference
-id_ref = p.Kp_p*(Pref - P_meas) + p.Ki_p*eps_p;
-iq_ref = zeros(N,1);
-
-% Inner current control using GFF-filtered voltages as feedforward
-%   GFF 1/(1+tau*s) at 88 rad/s: |G|=0.752, phase=-41° → uncancelled
-%   fraction ~0.66, which is the key coupling that creates instability.
-vd_vsc = p.Kp_i*(id_ref - id_loc) + p.Ki_i*eps_id - w0*Lf*iq_loc + Vd_ff;
-vq_vsc = p.Kp_i*(iq_ref - iq_loc) + p.Ki_i*eps_iq + w0*Lf*id_loc + Vq_ff;
-
-% PLL (co-rotating frame: dphi/dt = dtheta/dt - w0)
-dphi     = p.Kp_pll*Vq_l + p.Ki_pll*eps_pll;
-deps_pll = Vq_l;
-deps_p   = Pref - P_meas;
-deps_id  = id_ref - id_loc;
-deps_iq  = iq_ref - iq_loc;
-
-% LCL filter (simplified: only Lf, no Cf state)
-did = (vd_vsc - Vd_l - Rf*id_loc)./Lf + w0*iq_loc;
-diq = (vq_vsc - Vq_l - Rf*iq_loc)./Lf - w0*id_loc;
-
-% GFF filter dynamics
-dVd_ff = (Vd_l - Vd_ff) / tau;
-dVq_ff = (Vq_l - Vq_ff) / tau;
-
-dxdt = zeros(9*N, 1);
-dxdt(1:9:end) = dphi;
-dxdt(2:9:end) = deps_pll;
-dxdt(3:9:end) = deps_p;
-dxdt(4:9:end) = deps_id;
-dxdt(5:9:end) = deps_iq;
-dxdt(6:9:end) = did;
-dxdt(7:9:end) = diq;
-dxdt(8:9:end) = dVd_ff;
-dxdt(9:9:end) = dVq_ff;
-end
+% Local fsolve-based functions removed.
+% Steady-state computation now uses gfl9_find_ss (lib/), which requires no
+% Optimization Toolbox.  ODE evaluations use gfl9_ode (lib/) with V_inf=1.0.

@@ -29,12 +29,6 @@ if ~exist(resultsDir, 'dir'), mkdir(resultsDir); end
 
 ctrl = gfl_control_params();
 
-%% ── Eigenvalue table ─────────────────────────────────────────────────────
-% Using hardcoded Table V for speed; replace with:
-%   eig_table = compute_first_principles_eigenvalues(linspace(1.5,5.0,13));
-eig_table.gSCR  = [2.650, 2.926, 3.256, 3.666];
-eig_table.sigma = [0.090, -1.758, -3.485, -5.104];
-eig_table.omega = [88.342, 88.949, 89.346, 89.564];
 
 %% ── Build two-area Z matrix ──────────────────────────────────────────────
 % The two-area network has CBRs at nodes 1-4 and passive buses 5-8, with
@@ -95,17 +89,14 @@ fprintf('  Initial gSCR (4 CBRs, no SE): %.4f\n', ...
 c2_cbr_mask = logical([1; 1; 1; 0]);   % CBR nodes only in Case 2 output
 
 cases_2a = {
-    'Case 1: No SE',      ...
-        Z2a([1 2 3 4],[1 2 3 4]),  [0.5;1.0;1.5;0.5],  true(4,1),   [0.5;1.0;1.5;0.5],   100
-    'Case 2: SEs at 4,6', ...
-        Z2a([1 2 3 6],[1 2 3 6]),  [0.5;1.0;1.5;-0.5], c2_cbr_mask, [0.5;1.0;1.5;0.0],   100
-    'Case 3: SEs at 1,4', ...
-        Z2a([2 3],[2 3]),           [1.0;1.5],          true(2,1),   [1.0;1.5],            100
+    'Case 1: No SE',      Z2a([1 2 3 4],[1 2 3 4]), [0.5;1.0;1.5;0.5],  true(4,1)
+    'Case 2: SEs at 4,6', Z2a([1 2 3 6],[1 2 3 6]), [0.5;1.0;1.5;-0.5], c2_cbr_mask
+    'Case 3: SEs at 1,4', Z2a([2 3],[2 3]),          [1.0;1.5],          true(2,1)
 };
 nCases = size(cases_2a, 1);
 
 %% ── Simulate and plot ────────────────────────────────────────────────────
-fprintf('\nRunning two-area simulations...\n');
+fprintf('\nRunning two-area simulations (9-state nonlinear ODE)...\n');
 
 fig = figure('Color','w','Name','GFL Two-Area: SE placement', ...
              'Position',[100 80 760 520]);
@@ -116,18 +107,11 @@ for ci = 1:nCases
     Z_act    = cases_2a{ci,2};
     s_act    = cases_2a{ci,3}(:);
     cbr_mask = cases_2a{ci,4}(:);
-    P0       = cases_2a{ci,5}(:);
-    gf       = cases_2a{ci,6};
 
-    [A, B, C, D, info] = build_gfl_state_space(s_act, Z_act, ctrl, gf, eig_table);
-    fprintf('  %s:  gSCR=%.3f,  dom_eig=%+.3f±%.1fi\n', ...
-        label, info.gscr, real(info.dominant_eig), abs(imag(info.dominant_eig)));
+    [t, P, info] = run_gfl_full_nonlinear(s_act, Z_act, ctrl, 0.10, 1.0);
+    P_cbr = P(:, cbr_mask);
 
-    [t, dP] = run_gfl_case(A, B, C, D, 0.06, 1.0, rootMATLAB);
-    % sag magnitude 0.06 pu  (two-area uses smaller perturbation per paper)
-
-    P     = P0' + dP;                   % absolute power
-    P_cbr = P(:, cbr_mask);             % CBR nodes only
+    fprintf('  %s:  gSCR=%.3f\n', label, info.gscr);
 
     nexttile;
     cols = lines(size(P_cbr,2));
@@ -138,9 +122,7 @@ for ci = 1:nCases
     cbr_ids = find(cbr_mask);
     legend(arrayfun(@(n) sprintf('CBR %d',n), cbr_ids, 'UniformOutput',false), ...
         'Location','northeast','FontSize',7);
-    title(sprintf('%s  [gSCR=%.3f, \\lambda=%+.3f\\pm%.1fi]', ...
-        label, info.gscr, real(info.dominant_eig), abs(imag(info.dominant_eig))), ...
-        'Interpreter','tex');
+    title(sprintf('%s  [gSCR=%.3f]', label, info.gscr), 'Interpreter','none');
     ylabel('P (p.u.)');
     grid on;
     xlim([0 1.0]);

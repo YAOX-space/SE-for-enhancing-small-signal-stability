@@ -47,15 +47,6 @@ cbr_nodes39 = [30 31 32 33 34 35 37 38 39];     % 9 CBR bus numbers
 cbr_rows39  = b2r39(cbr_nodes39);               % row indices in Z39_full
 Z_9x9_raw   = Z39_full(cbr_rows39, cbr_rows39); % 9×9 CBR sub-matrix
 
-%% ── Eigenvalue table ─────────────────────────────────────────────────────
-% Using hardcoded Table V (paper) for speed.
-% For first-principles accuracy (no paper data), replace with:
-%   eig_table = compute_first_principles_eigenvalues(linspace(1.5,5.0,13));
-eig_table.gSCR  = [2.650, 2.926, 3.256, 3.666];
-eig_table.sigma = [0.090, -1.758, -3.485, -5.104];
-eig_table.omega = [88.342, 88.949, 89.346, 89.564];
-fprintf('Eigenvalue table: Table V (4 points).\n');
-fprintf('  → For independent check: eig_table = compute_first_principles_eigenvalues(...);\n\n');
 
 %% ════════════════════════════════════════════════════════════════════════
 %%  PART A  –  Varying gSCR (analog of Fig. 11)
@@ -86,12 +77,8 @@ tiledlayout(3, 1, 'Padding','compact', 'TileSpacing','compact');
 
 for ci = 1:3
     Zm = (k_A * m_vals(ci)/1.015) * Z_9x9_raw;
-    [A, B, C, D, info] = build_gfl_state_space(s_A, Zm, ctrl, 200, eig_table);
-    fprintf('  %s:  gSCR=%.3f,  dom_eig=%+.3f±%.1fi\n', ...
-        labels_A{ci}, info.gscr, real(info.dominant_eig), abs(imag(info.dominant_eig)));
-
-    [t, dP] = run_gfl_case(A, B, C, D, 0.10, 1.0, rootMATLAB);
-    P = ones(1, 9) + dP;   % nominal P = 1.0 pu
+    [t, P, info] = run_gfl_full_nonlinear(s_A, Zm, ctrl, 0.10, 1.0);
+    fprintf('  %s:  gSCR=%.3f\n', labels_A{ci}, info.gscr);
 
     nexttile;
     cols = lines(9);
@@ -99,9 +86,7 @@ for ci = 1:3
     for k = 1:9
         plot(t, P(:,k), 'LineWidth', 0.9, 'Color', cols(k,:));
     end
-    title(sprintf('%s  [gSCR=%.3f, \\lambda=%+.3f\\pm%.1fi]', ...
-        labels_A{ci}, info.gscr, real(info.dominant_eig), abs(imag(info.dominant_eig))), ...
-        'Interpreter','tex');
+    title(sprintf('%s  [gSCR=%.3f]', labels_A{ci}, info.gscr), 'Interpreter','none');
     ylabel('P (p.u.)');
     grid on;
     xlim([0 1.0]);
@@ -150,12 +135,11 @@ idx379 = ismember(cbr_nodes39, [37 38 39]);
 s_B4   = ones(9,1);  s_B4(idx379) = 1.0 - SE39_cap;  % net = 0.25
 Z_B4   = Z39_cal(cbr_rows39, cbr_rows39);             % 9×9
 
-% cbr_mask: which rows of dP correspond to CBR nodes (exclude SE-only nodes)
 cases_B = {
-    'Case 1: No SE',              Z_B1, s_B1, true(9,1),               ones(9,1)
-    'Case 2: 3 SEs at node 23',   Z_B2, s_B2, [true(9,1); false],      [ones(9,1); 0]
-    'Case 3: SEs at 3, 22, 35',   Z_B3, s_B3, [true(9,1);false;false], [ones(9,1);0;0]
-    'Case 4: SEs at 37, 38, 39',  Z_B4, s_B4, true(9,1),               ones(9,1)
+    'Case 1: No SE',              Z_B1, s_B1, true(9,1)
+    'Case 2: 3 SEs at node 23',   Z_B2, s_B2, [true(9,1); false]
+    'Case 3: SEs at 3, 22, 35',   Z_B3, s_B3, [true(9,1);false;false]
+    'Case 4: SEs at 37, 38, 39',  Z_B4, s_B4, true(9,1)
 };
 nB = size(cases_B, 1);
 
@@ -168,15 +152,10 @@ for ci = 1:nB
     Z_act    = cases_B{ci,2};
     s_act    = cases_B{ci,3}(:);
     cbr_mask = cases_B{ci,4}(:);
-    P0       = cases_B{ci,5}(:);
 
-    [A, B, C, D, info] = build_gfl_state_space(s_act, Z_act, ctrl, 200, eig_table);
-    fprintf('  %s:  gSCR=%.3f,  dom_eig=%+.3f±%.1fi\n', ...
-        label, info.gscr, real(info.dominant_eig), abs(imag(info.dominant_eig)));
-
-    [t, dP] = run_gfl_case(A, B, C, D, 0.10, 1.0, rootMATLAB);
-    P_cbr   = (P0' + dP);
-    P_cbr   = P_cbr(:, cbr_mask);
+    [t, P, info] = run_gfl_full_nonlinear(s_act, Z_act, ctrl, 0.10, 1.0);
+    P_cbr = P(:, cbr_mask);
+    fprintf('  %s:  gSCR=%.3f\n', label, info.gscr);
 
     nexttile;
     cols = lines(size(P_cbr, 2));
@@ -184,9 +163,7 @@ for ci = 1:nB
     for k = 1:size(P_cbr,2)
         plot(t, P_cbr(:,k), 'LineWidth', 0.9, 'Color', cols(k,:));
     end
-    title(sprintf('%s  [gSCR=%.3f, \\lambda=%+.3f\\pm%.1fi]', ...
-        label, info.gscr, real(info.dominant_eig), abs(imag(info.dominant_eig))), ...
-        'Interpreter','tex');
+    title(sprintf('%s  [gSCR=%.3f]', label, info.gscr), 'Interpreter','none');
     ylabel('P (p.u.)');
     grid on;
     xlim([0 1.0]);

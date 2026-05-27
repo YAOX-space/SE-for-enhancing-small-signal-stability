@@ -5,9 +5,8 @@ function run_physics_simulink_reproduction()
 % Stability of Converter-Based Renewable Systems", IEEE TIA 2025.
 %
 % Time-domain figures (6, 11, 12, 14):
-%   Physics-informed linearised state-space model (build_gfl_state_space)
-%   with gSCR -> (sigma, omega) mapping from first-principles 9-state GFL
-%   model (compute_first_principles_eigenvalues), NOT from paper Table V.
+%   Full 9-state nonlinear GFL ODE integrated with ode15s (run_gfl_full_nonlinear).
+%   No linearisation, no Simulink, no paper Table V used for waveforms.
 %
 % Eigenvalue figures (8, 10):
 %   pchip interpolation of first-principles table over gSCR sweep; 39-node
@@ -37,7 +36,7 @@ fprintf('Control params: Kp_pll=%g  Ki_pll=%g\n', ctrl.Kp_pll, ctrl.Ki_pll);
 % from the control model, without using paper Table V as input.
 fprintf('\nComputing first-principles eigenvalue table (gSCR 1.5 to 5.0)...\n');
 fprintf('(~15 fsolve+Jacobian evaluations; takes ~1 min)\n');
-fp_gscr_sweep = [linspace(1.5, 2.0, 3), linspace(2.1, 3.0, 5), linspace(3.2, 5.0, 5)];
+fp_gscr_sweep = [2.4, 2.55, linspace(2.65, 3.0, 5), linspace(3.2, 5.0, 5)];
 fp_raw  = compute_first_principles_eigenvalues(fp_gscr_sweep);
 eig_table.gSCR  = fp_raw.gSCR(:)';
 eig_table.sigma = fp_raw.sigma(:)';
@@ -61,117 +60,213 @@ cbr_rows39  = b2r39(cbr_nodes39);
 Z_9x9_raw   = Z39_full(cbr_rows39, cbr_rows39);   % 9x9 CBR submatrix
 
 % ═══════════════════════════════════════════════════════════════════════
-%  FIG. 8  Weakest eigenvalue loci (CBR injecting vs SE absorbing)
+%  FIG. 8  Loci of weakest eigenvalues (single-converter, N=1)
 %
-%  CBR locus: gSCR sweeps 4.0 → 1.5 (network weakens); sigma crosses 0.
-%             Derived from first-principles eig_table (no paper data used).
-%  SE locus:  SE co-located at CBR node 1; se_cap grows 0.5 → 4.0 pu.
-%             Net signed capacity at node 1 = 1 - se_cap (increasingly
-%             negative).  λmax decreases → gSCR increases → sigma moves
-%             deeper into LHP.  Uses same eig_table, no empirical fit.
+%  Matches paper Fig. 8:
+%    CBR locus: s=+1  (injecting), Z11=1/SCR, SCR: 4.0→1.5  (rightward)
+%    SE  locus: s=-1  (absorbing), Z11=1/|SCR|, |SCR|: 1.5→4.0 (rightward)
+%  Both plotted as discrete markers: SE=blue stars, CBR=red triangles.
 % ═══════════════════════════════════════════════════════════════════════
-fprintf('\n── Fig. 8: Eigenvalue loci ──\n');
+fprintf('\n── Fig. 8: Eigenvalue loci (single-converter N=1) ──\n');
 
-gscr_cbr  = linspace(4.0, 1.5, 80);
-sigma_cbr = interp1(eig_table.gSCR, eig_table.sigma, gscr_cbr, 'pchip', 'extrap');
-omega_cbr = interp1(eig_table.gSCR, eig_table.omega, gscr_cbr, 'pchip', 'extrap');
-
-% SE locus: calibrate 9-CBR Z to gSCR=2.650 baseline, then add SE at node 1
-k_fig8_se  = (1/2.650) / max_positive_eig(Z_9x9_raw);
-Z_9x9_se   = k_fig8_se * Z_9x9_raw;
-s_cbr9     = ones(9,1);
-se_cap_range = linspace(0.5, 4.0, 80);
-sigma_se   = nan(size(se_cap_range));
-omega_se   = nan(size(se_cap_range));
-for i8 = 1:numel(se_cap_range)
-    s_try = s_cbr9;
-    s_try(1) = 1.0 - se_cap_range(i8);   % node 1: net signed cap = CBR - SE
-    try
-        lam_try  = max_positive_eig(diag(s_try) * Z_9x9_se);
-        gscr_try = 1 / lam_try;
-        sigma_se(i8) = interp1(eig_table.gSCR, eig_table.sigma, gscr_try, 'pchip', 'extrap');
-        omega_se(i8) = interp1(eig_table.gSCR, eig_table.omega, gscr_try, 'pchip', 'extrap');
-    catch
-    end
+% -- CBR locus: s=+1, SCR sweeps 4.0 → 1.5 ---------------------------
+scr_cbr = linspace(4.0, 1.5, 20);
+sigma_cbr = nan(size(scr_cbr));
+omega_cbr = nan(size(scr_cbr));
+fprintf('  CBR locus (%d pts)...', numel(scr_cbr));
+for i8 = 1:numel(scr_cbr)
+    [ok8, sigma_cbr(i8), omega_cbr(i8)] = ...
+        compute_single_conv_eig(1/scr_cbr(i8), 1.0, ctrl);
+    if ~ok8, sigma_cbr(i8) = NaN; omega_cbr(i8) = NaN; end
 end
-valid_se = ~isnan(sigma_se);
-sigma_se  = sigma_se(valid_se);
-omega_se  = omega_se(valid_se);
+fprintf(' done.\n');
+valid_cbr = ~isnan(sigma_cbr);
 
-fig8 = figure('Color','w','Name','Fig 8','Position',[60 60 620 480]);
-plot(sigma_cbr,  omega_cbr, 'LineWidth', 1.6, 'Color', [0 0.447 0.741]); hold on;
-plot(sigma_cbr, -omega_cbr, 'LineWidth', 1.6, 'Color', [0 0.447 0.741]);
-plot(sigma_se,   omega_se,  'LineWidth', 1.6, 'Color', [0.85 0.325 0.098]);
-plot(sigma_se,  -omega_se,  'LineWidth', 1.6, 'Color', [0.85 0.325 0.098]);
-xline(0, '--k');
-grid on;
-xlabel('Real axis');
-ylabel('Imaginary axis');
-title('Fig. 8: Weakest eigenvalue loci');
-legend('Injecting active power (CBR)', '', 'Absorbing active power (SE)', '', ...
-    'Location', 'best');
-exportgraphics(fig8, fullfile(resultsDir, 'fig8_eigenvalue_loci.png'), ...
-    'Resolution', 180, 'BackgroundColor', 'white');
+% -- SE locus: s=-1, |SCR| sweeps 1.5 → 4.0 --------------------------
+scr_se = linspace(1.5, 4.0, 20);
+sigma_se = nan(size(scr_se));
+omega_se = nan(size(scr_se));
+fprintf('  SE  locus (%d pts)...', numel(scr_se));
+for i8 = 1:numel(scr_se)
+    [ok8, sigma_se(i8), omega_se(i8)] = ...
+        compute_single_conv_eig(1/scr_se(i8), -1.0, ctrl);
+    if ~ok8, sigma_se(i8) = NaN; omega_se(i8) = NaN; end
+end
+fprintf(' done.\n');
+valid_se = ~isnan(sigma_se);
+
+fig8 = figure('Color','w','Name','Fig 8','Position',[60 60 620 480],'Visible','off');
+hold on;
+
+% SE: blue filled stars (pentagram)
+scatter(sigma_se(valid_se),  omega_se(valid_se),  70, 'p', ...
+    'MarkerFaceColor',[0.15 0.45 0.80], 'MarkerEdgeColor',[0.10 0.30 0.65], ...
+    'LineWidth',0.8, 'DisplayName','When absorbing active power from the grid');
+scatter(sigma_se(valid_se), -omega_se(valid_se),  70, 'p', ...
+    'MarkerFaceColor',[0.15 0.45 0.80], 'MarkerEdgeColor',[0.10 0.30 0.65], ...
+    'LineWidth',0.8, 'HandleVisibility','off');
+
+% CBR: red open triangles
+scatter(sigma_cbr(valid_cbr),  omega_cbr(valid_cbr), 70, '^', ...
+    'MarkerEdgeColor',[0.80 0.10 0.10], 'MarkerFaceColor','none', ...
+    'LineWidth',1.0, 'DisplayName','When injecting active power into the grid');
+scatter(sigma_cbr(valid_cbr), -omega_cbr(valid_cbr), 70, '^', ...
+    'MarkerEdgeColor',[0.80 0.10 0.10], 'MarkerFaceColor','none', ...
+    'LineWidth',1.0, 'HandleVisibility','off');
+
+xline(0, '--k', 'LineWidth', 0.8);
+ax8 = gca;
+grid off;
+xlabel('Real Part');
+ylabel('Imaginary Part');
+
+% Dashed boxes around each cluster
+se_x = sigma_se(valid_se);  se_w = omega_se(valid_se);
+if ~isempty(se_x)
+    x1 = min(se_x)-2; x2 = max(se_x)+2;
+    y1 = -(max(se_w)+15); y2 = max(se_w)+15;
+    rectangle('Position',[x1,y1,x2-x1,y2-y1], ...
+              'EdgeColor',[0.3 0.3 0.3],'LineStyle','--','LineWidth',0.9);
+    % Direction arrow: left→right (SCR: -1.5→-4.0)
+    annotation('textarrow',[0.18 0.30],[0.50 0.50], ...
+        'String','','HeadWidth',6,'HeadLength',6,'LineWidth',0.9,'Units','normalized');
+    text(ax8, mean([x1 x2]), 0, 'SCR: -1.5\rightarrow-4.0', ...
+         'FontSize',8,'HorizontalAlignment','center');
+end
+cbr_x = sigma_cbr(valid_cbr);  cbr_w = omega_cbr(valid_cbr);
+if ~isempty(cbr_x)
+    x1 = min(cbr_x)-2; x2 = max(cbr_x)+2;
+    y1 = -(max(cbr_w)+15); y2 = max(cbr_w)+15;
+    rectangle('Position',[x1,y1,x2-x1,y2-y1], ...
+              'EdgeColor',[0.3 0.3 0.3],'LineStyle','--','LineWidth',0.9);
+    annotation('textarrow',[0.55 0.88],[0.50 0.50], ...
+        'String','','HeadWidth',6,'HeadLength',6,'LineWidth',0.9,'Units','normalized');
+    text(ax8, mean([x1 x2]), 0, 'SCR: 4.0\rightarrow1.5', ...
+         'FontSize',8,'HorizontalAlignment','center');
+end
+
+legend('Location','north','Box','off','FontSize',8);
+set(ax8,'Color','w','Box','on','XColor','k','YColor','k');
+exportgraphics(fig8, fullfile(resultsDir,'fig8_eigenvalue_loci.png'), ...
+    'Resolution',180,'BackgroundColor','white');
+close(fig8);
 fprintf('  → fig8_eigenvalue_loci.png\n');
 
 % ═══════════════════════════════════════════════════════════════════════
-%  FIG. 10  IEEE 39-node: all eigenvalues as m varies (Fig.9 scenario)
+%  FIG. 10  IEEE 39-node: eigenvalue loci as m varies
 %
-%  Scenario: 3 SEs at nodes 30,31,32 (s_net = 1-0.75 = 0.25 each).
-%  m = SE capacity multiplier.
-%    m = 0.700 → gSCR ≈ 3.86  (well-damped)
-%    m = 1.015 → gSCR ≈ 2.659 (critical, unstable)
-%    m = 1.050 → gSCR ≈ 2.571 (unstable)
+%  Computes the actual N=9 gfl13 Jacobian (117×117) at each m value.
+%  Panel (a): all 117 eigenvalues at m=1.015 (gSCR≈2.66)
+%  Panel (b): PLL-band eigenvalues [70,130 rad/s] as discrete markers
 % ═══════════════════════════════════════════════════════════════════════
 fprintf('\n── Fig. 10: 39-node eigenvalues ──\n');
 
-s_f10 = ones(9,1);
-s_f10(1:3) = 1.0 - SE39_cap;   % nodes 30,31,32: CBR+SE co-located
+s_f10     = ones(9,1);
+s_f10(1:3) = 1.0 - SE39_cap;          % nodes 30-32: s_net=0.25
+W_raw_f10  = diag(s_f10) * Z_9x9_raw;
+k_f10      = (1/2.659) / max_positive_eig(W_raw_f10);
+nSt_f10    = 13*9;
 
-W_raw_f10 = diag(s_f10) * Z_9x9_raw;
-k_f10     = (1/2.659) / max_positive_eig(W_raw_f10);   % calibrate to m=1.015
+% Discrete m values: 10 points from well-damped to unstable
+m_vals_f10 = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.015, 1.03, 1.05];
+nM_f10     = numel(m_vals_f10);
 
-m_range   = linspace(0.70, 1.05, 120);
-sigma_f10 = zeros(size(m_range));
-omega_f10 = zeros(size(m_range));
-for i = 1:numel(m_range)
-    Zm = (k_f10 * m_range(i)/1.015) * Z_9x9_raw;
-    lam = max_positive_eig(diag(s_f10) * Zm);
-    gscr_i = 1/lam;
-    sigma_f10(i) = interp1(eig_table.gSCR, eig_table.sigma, gscr_i, 'pchip', 'extrap');
-    omega_f10(i) = interp1(eig_table.gSCR, eig_table.omega, gscr_i, 'pchip', 'extrap');
+sigma_pll_f10 = cell(nM_f10, 1);   % real parts of PLL-band eigs
+omega_pll_f10 = cell(nM_f10, 1);   % imag parts of PLL-band eigs
+ev_full_ref   = [];                 % all 117 eigs at m=1.015 for panel (a)
+
+for ii = 1:nM_f10
+    m_ii  = m_vals_f10(ii);
+    Z_m   = (k_f10 * m_ii/1.015) * Z_9x9_raw;
+    gscr_m = 1/max_positive_eig(diag(s_f10)*Z_m);
+    fprintf('  m=%.3f (gSCR=%.3f) Jacobian...', m_ii, gscr_m);
+    try
+        x_ss = gfl13_find_ss(Z_m, s_f10, ctrl);
+        f0   = gfl13_ode(x_ss, ctrl, Z_m, s_f10, 1.0);
+        J_m  = zeros(nSt_f10);
+        for jj = 1:nSt_f10
+            xp = x_ss; xp(jj) = xp(jj) + 1e-7;
+            J_m(:,jj) = (gfl13_ode(xp, ctrl, Z_m, s_f10, 1.0) - f0) / 1e-7;
+        end
+        ev_m = eig(J_m);
+        if abs(m_ii - 1.015) < 0.001
+            ev_full_ref = ev_m;          % save full spectrum for panel (a)
+        end
+        mask_pll = abs(imag(ev_m)) >= 70 & abs(imag(ev_m)) <= 130;
+        sigma_pll_f10{ii} = real(ev_m(mask_pll));
+        omega_pll_f10{ii} = imag(ev_m(mask_pll));
+        fprintf(' %d PLL eigs\n', sum(mask_pll));
+    catch e
+        fprintf(' failed: %s\n', e.message);
+    end
 end
-gscr_check = @(m) 1/max_positive_eig(diag(s_f10) * ((k_f10*m/1.015)*Z_9x9_raw));
-fprintf('  m=0.70 gSCR=%.3f | m=1.015 gSCR=%.3f | m=1.05 gSCR=%.3f\n', ...
-    gscr_check(0.70), gscr_check(1.015), gscr_check(1.05));
 
-rng(202503, 'twister');
-x_bg =  -18 - 45*rand(120,1);
-y_bg =   40 + 120*rand(120,1);
+fig10 = figure('Color','w','Name','Fig 10','Position',[80 60 920 420],'Visible','off');
 
-fig10 = figure('Color','w','Name','Fig 10','Position',[80 60 920 400]);
+% ── Panel (a): all eigenvalues at m=1.015 ─────────────────────────────
 subplot(1,2,1);
-scatter(x_bg,  y_bg, 8, [0.65 0.65 0.65], 'filled'); hold on;
-scatter(x_bg, -y_bg, 8, [0.65 0.65 0.65], 'filled');
-plot(sigma_f10,  omega_f10, 'r-', 'LineWidth', 1.4);
-plot(sigma_f10, -omega_f10, 'r-', 'LineWidth', 1.4);
-xline(0, '--k');  grid on;
-xlabel('Real axis');  ylabel('Imaginary axis');
-title('All eigenvalues');
+hold on;
+if ~isempty(ev_full_ref)
+    % All non-PLL eigenvalues in grey
+    mask_bg = abs(imag(ev_full_ref)) < 70 | abs(imag(ev_full_ref)) > 130;
+    scatter(real(ev_full_ref(mask_bg)),  imag(ev_full_ref(mask_bg)), ...
+            14, [0.55 0.55 0.55], 'x', 'LineWidth', 0.8);
+    % PLL eigenvalues in red
+    mask_a = abs(imag(ev_full_ref)) >= 70 & abs(imag(ev_full_ref)) <= 130;
+    ev_pll_a = ev_full_ref(mask_a);
+    scatter(real(ev_pll_a), imag(ev_pll_a), 40, [0.8 0 0], 'x', 'LineWidth', 1.5);
+end
+xline(0,'--k','LineWidth',0.8);
+xlabel('Real Part'); ylabel('Imaginary Part');
+title('(a)');
+set(gca,'Color','w','Box','on'); grid off;
 
+% ── Panel (b): PLL eigenvalues, discrete scatter markers ──────────────
 subplot(1,2,2);
-plot(sigma_f10,  omega_f10, 'r-', 'LineWidth', 1.6); hold on;
-plot(sigma_f10, -omega_f10, 'r-', 'LineWidth', 1.6);
-xline(0, '--k');  grid on;
-xlabel('Real axis');  ylabel('Imaginary axis');
-title('Weakest eigenvalues');
+hold on;
+for ii = 1:nM_f10
+    sig = sigma_pll_f10{ii};
+    omg = omega_pll_f10{ii};
+    if isempty(sig), continue; end
+    % Blue-outlined red-filled squares (matching paper style)
+    scatter(sig,  omg, 45, 's', 'MarkerEdgeColor',[0 0 0.75], ...
+            'MarkerFaceColor',[0.85 0.08 0.08], 'LineWidth', 0.7);
+    scatter(sig, -omg, 45, 's', 'MarkerEdgeColor',[0 0 0.75], ...
+            'MarkerFaceColor',[0.85 0.08 0.08], 'LineWidth', 0.7);
+end
+xline(0,'--k','LineWidth',1.0);
 
-exportgraphics(fig10, fullfile(resultsDir, 'fig10_39node_eigenvalues.png'), ...
-    'Resolution', 180, 'BackgroundColor', 'white');
+% Direction arrow annotation (left to right = gSCR 3.86 → 2.57)
+ax2 = gca;
+xl  = xlim(ax2);
+annotation('textarrow', [0.58 0.78], [0.62 0.62], 'String','', ...
+    'HeadWidth',6,'HeadLength',6,'LineWidth',1.0, ...
+    'Units','normalized');
+text(ax2,-5.2, 98,'gSCR: 3.86\rightarrow2.57','FontSize',8,'Color','k');
+
+% Highlight gSCR≈2.66 (m=1.015) cluster
+sig_crit = sigma_pll_f10{abs(m_vals_f10 - 1.015) < 0.001};
+if ~isempty(sig_crit)
+    x1 = min(sig_crit)-0.25;  x2 = max(sig_crit)+0.25;
+    rectangle('Position',[x1, 68, x2-x1, 130-68+4], ...
+              'EdgeColor','r','LineWidth',1.2,'LineStyle','-');
+    text(ax2, mean(sig_crit), -102, 'gSCR=2.66', ...
+         'Color','r','FontSize',8,'HorizontalAlignment','center');
+end
+
+xlabel('Real Part'); ylabel('Imaginary Part');
+title('(b)');
+set(ax2,'Color','w','Box','on'); grid off;
+
+exportgraphics(fig10, fullfile(resultsDir,'fig10_39node_eigenvalues.png'), ...
+    'Resolution',180,'BackgroundColor','white');
+close(fig10);
 fprintf('  → fig10_39node_eigenvalues.png\n');
 
 % ═══════════════════════════════════════════════════════════════════════
 %  TWO-AREA FOUR-CBR  →  Fig. 6
+%  Same 4-CBR system at three gSCR levels: 2.66 (unstable), 2.95, 3.57.
+%  Power is normalised by s_ref so all converters start at 1.0 pu.
 % ═══════════════════════════════════════════════════════════════════════
 fprintf('\n── Two-area network (Fig. 6) ──\n');
 
@@ -179,30 +274,58 @@ W_paper = [0.223 0.069 0.015 0.015;
            0.139 0.238 0.030 0.030;
            0.045 0.045 0.249 0.130;
            0.015 0.015 0.043 0.246];
-s_cbr_2a = [0.5; 1.0; 1.5; 0.5];
-Z_cbr_2a = diag(1./s_cbr_2a) * W_paper;
-Z_cbr_2a = (Z_cbr_2a + Z_cbr_2a') / 2;
+s_cbr_2a  = [0.5; 1.0; 1.5; 0.5];
+Z_base_2a = diag(1./s_cbr_2a) * W_paper;
+Z_base_2a = (Z_base_2a + Z_base_2a') / 2;   % symmetrise
+W_base_2a = diag(s_cbr_2a) * Z_base_2a;
+lam_base_2a  = max_positive_eig(W_base_2a);
+gSCR_base_2a = 1 / lam_base_2a;
+fprintf('  Base two-area gSCR = %.3f\n', gSCR_base_2a);
 
-lines2a = readtable(fullfile(dataDir, 'table_x_two_area_lines.csv'));
-[~, Z2a_net] = build_network_from_edges(lines2a, 9, 9);   % 8x8
+gSCR_f6     = [2.66, 2.95, 3.57];
+panel_lbl   = {'(a)','(b)','(c)'};
+results_f6  = cell(3,1);
 
-Z2a = Z2a_net;
-Z2a(1:4, 1:4) = Z_cbr_2a;
-W_col6   = [0.030; 0.060; 0.045; 0.015];
-Z_cross6 = W_col6 ./ s_cbr_2a;
-Z2a(1:4, 6) = Z_cross6;
-Z2a(6, 1:4) = Z_cross6';
-
-c2_mask = [true; true; true; false];
-cases2a = {
-    'Case 1: no SE',      Z2a([1 2 3 4],[1 2 3 4]), [0.5;1.0;1.5;0.5],  true(4,1),  [0.5;1.0;1.5;0.5], 100
-    'Case 2: SEs at 4,6', Z2a([1 2 3 6],[1 2 3 6]), [0.5;1.0;1.5;-0.5], c2_mask,    [0.5;1.0;1.5;0.0], 100
-    'Case 3: SEs at 1,4', Z2a([2 3],[2 3]),          [1.0;1.5],          true(2,1),  [1.0;1.5],         100
-};
+for ii = 1:3
+    k_ii   = gSCR_base_2a / gSCR_f6(ii);   % scale Z → gSCR = gSCR_f6(ii)
+    Z_ii   = k_ii * Z_base_2a;
+    gscr_v = 1 / max_positive_eig(diag(s_cbr_2a) * Z_ii);
+    fprintf('  Simulating gSCR=%.2f (actual=%.3f)...\n', gSCR_f6(ii), gscr_v);
+    [t_ii, P_ii, ~] = run_gfl_full_nonlinear(s_cbr_2a, Z_ii, ctrl, 0.10, 1.0);
+    P_norm = P_ii ./ s_cbr_2a(:)';          % normalise: each column / s_ref_k
+    results_f6{ii} = struct('t', t_ii, 'P', P_norm, 'gscr', gscr_v);
+end
 
 fig6_path = fullfile(resultsDir, 'fig6_two_area_time_domain.png');
-simulate_and_plot(cases2a, ctrl, 0.06, 1.0, ...
-    'Fig. 6: Two-area four-CBR active power responses', fig6_path, rootDir, eig_table);
+f6_cols   = lines(4);
+cbr_names = {'CBR1','CBR2','CBR3','CBR4'};
+
+fig6 = figure('Color','w','Name','Fig 6','Position',[80 60 480 580],'Visible','off');
+tiledlayout(fig6, 3, 1, 'Padding','compact','TileSpacing','compact');
+for ii = 1:3
+    r  = results_f6{ii};
+    ax = nexttile;
+    hold(ax,'on');
+    for j = 1:4
+        plot(ax, r.t, r.P(:,j), 'LineWidth', 0.9, 'Color', f6_cols(j,:));
+    end
+    set(ax,'Color','w','Box','on','XColor','k','YColor','k');
+    grid(ax,'off');
+    xlim(ax,[0 1.0]);
+    ylabel(ax,'P/(p.u.)');
+    text(ax,0.97,0.08,sprintf('gSCR=%.2f',r.gscr),'Units','normalized',...
+         'HorizontalAlignment','right','FontSize',9);
+    text(ax,0.03,0.08,panel_lbl{ii},'Units','normalized',...
+         'HorizontalAlignment','left','FontSize',9,'FontWeight','bold');
+    if ii == 1
+        legend(ax, cbr_names{:}, 'Location','north','Orientation','horizontal',...
+               'FontSize',8,'Box','off');
+    end
+    if ii == 3, xlabel(ax,'time/s'); end
+end
+exportgraphics(fig6, fig6_path, 'Resolution',180,'BackgroundColor','white');
+close(fig6);
+fprintf('  → fig6_two_area_time_domain.png\n');
 
 % ═══════════════════════════════════════════════════════════════════════
 %  IEEE 39-NODE  →  Fig. 11 and Fig. 12
@@ -226,13 +349,11 @@ for i = 1:3
     cases39_fig11{i,2} = Z_m_9x9;
     cases39_fig11{i,3} = s_fig9;
     cases39_fig11{i,4} = true(9,1);
-    cases39_fig11{i,5} = ones(9,1);
-    cases39_fig11{i,6} = 200;
 end
 
 fig11_path = fullfile(resultsDir, 'fig11_39node_gscr_time_domain.png');
 simulate_and_plot(cases39_fig11, ctrl, 0.10, 1.0, ...
-    'Fig. 11: 39-node responses at different gSCR levels', fig11_path, rootDir, eig_table);
+    'Fig. 11: 39-node responses at different gSCR levels', fig11_path);
 
 % ── Fig. 12: m=0.75, vary SE placement ───────────────────────────────────
 k_fig12 = (1/2.650) / max_positive_eig(Z_9x9_raw);
@@ -260,15 +381,15 @@ s_c4(idx379) = 1.0 - SE39_cap;
 Z_c4   = Z39_f12(cbr_rows39, cbr_rows39);
 
 cases39_fig12 = {
-    'Case 1: no SE',           Z_c1, s_c1, true(9,1),              ones(9,1),           200
-    'Case 2: 3 SEs at node 23',Z_c2, s_c2, [true(9,1);false],      [ones(9,1);0],       200
-    'Case 3: SEs at 3,22,35',  Z_c3, s_c3, [true(9,1);false;false],[ones(9,1);0;0],     200
-    'Case 4: SEs at 37,38,39', Z_c4, s_c4, true(9,1),              ones(9,1),           200
+    'Case 1: no SE',           Z_c1, s_c1, true(9,1)
+    'Case 2: 3 SEs at node 23',Z_c2, s_c2, [true(9,1);false]
+    'Case 3: SEs at 3,22,35',  Z_c3, s_c3, [true(9,1);false;false]
+    'Case 4: SEs at 37,38,39', Z_c4, s_c4, true(9,1)
 };
 
 fig12_path = fullfile(resultsDir, 'fig12_39node_placement_time_domain.png');
 simulate_and_plot(cases39_fig12, ctrl, 0.10, 1.0, ...
-    'Fig. 12: 39-node SE placement comparison', fig12_path, rootDir, eig_table);
+    'Fig. 12: 39-node SE placement comparison', fig12_path);
 
 % ═══════════════════════════════════════════════════════════════════════
 %  33-CONVERTER  →  Fig. 14
@@ -306,14 +427,14 @@ if exist(mat33_path, 'file')
     mask33_c3 = [true(33,1); false(11,1)];
 
     cases33 = {
-        'Case 1: no SE',                     Z33_c1, s33_c1, true(33,1),   ones(33,1),                 1000
-        'Case 2: non-optimal passive SEs',   Z33_c2, s33_c2, mask33_c2,   [ones(33,1);zeros(11,1)],   1000
-        'Case 3: greedy-optimal passive SEs',Z33_c3, s33_c3, mask33_c3,   [ones(33,1);zeros(11,1)],   1000
+        'Case 1: no SE',                     Z33_c1, s33_c1, true(33,1)
+        'Case 2: non-optimal passive SEs',   Z33_c2, s33_c2, mask33_c2
+        'Case 3: greedy-optimal passive SEs',Z33_c3, s33_c3, mask33_c3
     };
 
     fig14_path = fullfile(resultsDir, 'fig14_33converter_time_domain.png');
     simulate_and_plot(cases33, ctrl, 0.25, 1.0, ...
-        'Fig. 14: 33-converter placement comparison', fig14_path, rootDir, eig_table);
+        'Fig. 14: 33-converter placement comparison', fig14_path);
 else
     fprintf('  33-converter matrices not found – run import_reproduction_data first.\n');
     fprintf('  Expected: %s\n', mat33_path);
@@ -324,94 +445,98 @@ end
 
 
 % ═══════════════════════════════════════════════════════════════════════
-%  simulate_and_plot  –  build state-space, run Simulink, plot CBR powers
+%  compute_single_conv_eig  –  dominant eigenvalue for N=1 GFL converter
 %
-%  cases: {label, Z_active, s_active, cbr_mask, P0_vec, gain_fac}
-%    cbr_mask  – logical(N,1): true for CBR nodes to plot
-%    P0_vec    – (N,1): nominal CBR device power (before ΔP)
-%    gain_fac  – scalar: coupling gain in build_gfl_state_space
-%  eig_table (optional) – struct with gSCR/sigma/omega from first-principles
+%  Z11   – scalar network impedance seen by the single converter
+%  S_ref – signed capacity: +1 for CBR, -se_cap for SE
+%  ctrl  – struct from gfl_control_params()
+%
+%  Returns ok=true and (sigma, omega) if SS converges; NaN otherwise.
 % ═══════════════════════════════════════════════════════════════════════
-function simulate_and_plot(cases, ctrl, u_mag, t_stop, figTitle, outPath, rootDir, eig_table)
+function [ok, sigma, omega] = compute_single_conv_eig(Z11, S_ref, ctrl)
+ok = false; sigma = NaN; omega = NaN;
+try
+    x_ss = gfl13_find_ss(Z11, S_ref, ctrl);
+    f0   = gfl13_ode(x_ss, ctrl, Z11, S_ref, 1.0);
+    J    = zeros(13);
+    eps_fd = 1e-7;
+    for j = 1:13
+        xp = x_ss; xp(j) = xp(j) + eps_fd;
+        J(:,j) = (gfl13_ode(xp, ctrl, Z11, S_ref, 1.0) - f0) / eps_fd;
+    end
+    ev = eig(J);
+    mask = abs(imag(ev)) >= 70 & abs(imag(ev)) <= 130;
+    ev_pll = ev(mask);
+    if isempty(ev_pll)
+        [~, bi] = min(abs(abs(imag(ev)) - 88));
+        lam = ev(bi);
+    else
+        [~, bi] = max(real(ev_pll));
+        lam = ev_pll(bi);
+    end
+    sigma = real(lam);
+    omega = abs(imag(lam));
+    ok = true;
+catch
+end
+end
+
+
+% ═══════════════════════════════════════════════════════════════════════
+%  simulate_and_plot  –  9-state nonlinear ODE simulation, plot CBR powers
+%
+%  cases: {label, Z_active, s_active, cbr_mask}
+%    cbr_mask – logical(N,1): true for CBR nodes to include in the plot
+%
+%  Two-phase design: run all ODE integrations first, then create and export
+%  the figure.  Avoids batch-mode figure-handle invalidation during long
+%  computations (R2025a issue with exportgraphics on long-lived figure handles).
+% ═══════════════════════════════════════════════════════════════════════
+function simulate_and_plot(cases, ctrl, u_mag, t_stop, figTitle, outPath)
 
 nCases = size(cases, 1);
-fig = figure('Color','w','Name',figTitle,'Position',[100 100 780 200*nCases]);
-tiledlayout(nCases, 1, 'Padding','compact','TileSpacing','compact');
 
+% ── Phase 1: run all simulations (no figure open) ────────────────────
+results = cell(nCases, 1);
 for k = 1:nCases
     label    = cases{k,1};
     Z_active = cases{k,2};
     s_active = cases{k,3}(:);
     cbr_mask = cases{k,4}(:);
-    P0 = cases{k,5}(:);
-    gf = cases{k,6};
+    [t, P, info] = run_gfl_full_nonlinear(s_active, Z_active, ctrl, u_mag, t_stop);
+    % Normalise by s_ref so each converter starts at 1.0 p.u.
+    s_cbr    = abs(s_active(cbr_mask));   % rated capacity of plotted CBRs
+    P_norm   = P(:, cbr_mask) ./ s_cbr(:)';
+    results{k} = struct('label', label, 't', t, ...
+                        'P_cbr', P_norm, 'gscr', info.gscr);
+end
 
-    if nargin >= 8 && ~isempty(eig_table)
-        [A, B, C, D, info] = build_gfl_state_space(s_active, Z_active, ctrl, gf, eig_table);
-    else
-        [A, B, C, D, info] = build_gfl_state_space(s_active, Z_active, ctrl, gf);
-    end
-    fprintf('  %s: N=%d, gSCR=%.3f, dom_eig=%.3f±%.1fi\n', ...
-        label, info.N, info.gscr, real(info.dominant_eig), abs(imag(info.dominant_eig)));
+% ── Phase 2: create a fresh figure and plot ───────────────────────────
+fig = figure('Color','w','Name',figTitle, ...
+             'Position',[100 100 780 200*nCases], 'Visible','off');
+tiledlayout(fig, nCases, 1, 'Padding','compact','TileSpacing','compact');
 
-    dP = run_one_case(A, B, C, D, u_mag, t_stop, rootDir);
-    t  = (0 : size(dP,1)-1)' * (t_stop / (size(dP,1)-1));
-
-    P     = P0' + dP;
-    P_cbr = P(:, cbr_mask);
-
-    nexttile;
-    hold on;
-    nCBR = size(P_cbr, 2);
+for k = 1:nCases
+    r    = results{k};
+    nCBR = size(r.P_cbr, 2);
     cols = lines(nCBR);
+
+    ax = nexttile;
+    hold(ax, 'on');
     for j = 1:nCBR
-        plot(t, P_cbr(:,j), 'LineWidth', 0.9, 'Color', cols(j,:));
+        plot(ax, r.t, r.P_cbr(:,j), 'LineWidth', 0.9, 'Color', cols(j,:));
     end
-    ylabel('P (p.u.)');
-    title(sprintf('%s  [gSCR=%.3f, \\lambda=%.3f\\pm%.1fi]', ...
-        label, info.gscr, real(info.dominant_eig), abs(imag(info.dominant_eig))), ...
-        'Interpreter','tex');
-    set(gca,'Color','w','XColor','k','YColor','k','Box','on');
-    grid off;
-    xlim([0 t_stop]);
-    if k == nCases, xlabel('Time (s)'); end
+    ylabel(ax, 'P/(p.u.)');
+    title(ax, sprintf('%s  [gSCR=%.3f]', r.label, r.gscr), 'Interpreter','none');
+    set(ax, 'Color','w','XColor','k','YColor','k','Box','on');
+    grid(ax, 'off');
+    xlim(ax, [0 t_stop]);
+    if k == nCases, xlabel(ax, 'time/s'); end
 end
-sgtitle(figTitle,'Color','k');
+sgtitle(fig, figTitle, 'Color','k');
 exportgraphics(fig, outPath, 'Resolution',180,'BackgroundColor','white');
+close(fig);
 fprintf('  → %s\n', outPath);
-end
-
-
-% ═══════════════════════════════════════════════════════════════════════
-%  run_one_case  –  run Simulink simulation, return ΔP matrix (T×N)
-% ═══════════════════════════════════════════════════════════════════════
-function dP = run_one_case(A, B, C, D, u_mag, t_stop, rootDir)
-
-dt  = 5e-4;
-t   = (0 : dt : t_stop)';
-t0s = 0.10;  t1s = 0.12;
-u   = zeros(size(t));
-flt = t >= t0s & t < t1s;
-u(flt) = -u_mag * sin(pi*(t(flt)-t0s)/(t1s-t0s)).^2;
-
-modelName = 'se_gfl_physics_model';
-modelPath = build_physics_simulink_model(rootDir, modelName, A, B, C, D);
-
-assignin('base', 'ss_A',          A);
-assignin('base', 'ss_B',          B);
-assignin('base', 'ss_C',          C);
-assignin('base', 'ss_D',          D);
-assignin('base', 'fault_input',   timeseries(u, t));
-assignin('base', 'sim_stop_time', num2str(t_stop));
-
-[modelDir, mname] = fileparts(modelPath);
-oldDir = pwd;  cd(modelDir);
-out = sim(mname, 'StopTime', num2str(t_stop));
-cd(oldDir);
-
-raw = out.get('simout_dP');
-dP  = raw.signals.values;
-if isvector(dP), dP = dP(:); end
 end
 
 
